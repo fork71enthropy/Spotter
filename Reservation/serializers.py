@@ -84,3 +84,50 @@ class ReservationCreateSerializer(serializers.Serializer):
             etudiant.save(update_fields=["hours"])
 
         return reservation
+
+class CarelAvailabilitySerializer(serializers.ModelSerializer):
+    """
+    Carel + son nombre de places encore libres pour UN créneau précis
+    (passé via le contexte du serializer, pas stocké en base).
+    """
+
+    places_restantes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Carel
+        fields = ["id", "numero", "etage", "nb_places", "places_restantes"]
+
+    def get_places_restantes(self, carel):
+        creneau = self.context.get("creneau")
+        if creneau is None:
+            # Aucune réservation n'a jamais été faite sur ce créneau exact
+            # -> il n'existe pas encore en base -> le carel est entièrement libre.
+            return carel.nb_places
+        prises = Reservation.objects.filter(carel=carel, creneau=creneau).count()
+        return max(carel.nb_places - prises, 0)
+
+class CarelDailyAvailabilitySerializer(serializers.ModelSerializer):
+    """
+    Carel + la liste des heures de début encore libres AUJOURD'HUI
+    (créneaux d'une durée donnée, 1h par défaut), sous forme de chaînes
+    "HH:MM" -> facile à afficher tel quel côté React.
+    """
+
+    creneaux_libres = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Carel
+        fields = ["id", "numero", "etage", "nb_places", "creneaux_libres"]
+
+    def get_creneaux_libres(self, carel):
+        candidate_times = self.context["candidate_times"]
+        existing_creneaux = self.context["existing_creneaux"]  # {datetime: Creneau}
+        reservation_counts = self.context["reservation_counts"]  # {(carel_id, creneau_id): count}
+
+        libres = []
+        for dt in candidate_times:
+            creneau = existing_creneaux.get(dt)
+            prises = 0 if creneau is None else reservation_counts.get((carel.id, creneau.id), 0)
+            if carel.nb_places - prises > 0:
+                libres.append(dt.strftime("%H:%M"))
+        return libres
