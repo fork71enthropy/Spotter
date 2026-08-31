@@ -4,6 +4,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
 
@@ -116,3 +118,45 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
             "refresh": str(refresh),
             "access": str(refresh.access_token),
         }
+
+"""
+Prend le refresh token généré par le front, le met sur liste noire via token.blacklist()
+"""
+
+class LogoutSerializer(serializers.Serializer):
+    """POST /api/logout/ {"refresh": "..."} -> blackliste ce refresh token."""
+
+    refresh = serializers.CharField()
+
+    def save(self, **kwargs):
+        try:
+            token = RefreshToken(self.validated_data["refresh"])
+            token.blacklist()
+        except TokenError:
+            raise serializers.ValidationError("Refresh token invalide ou déjà expiré.")
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """POST /api/change-password/ {"old_password": "...", "new_password": "..."}"""
+
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_old_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Mot de passe actuel incorrect.")
+        return value
+
+    def validate_new_password(self, value):
+        try:
+            validate_password(value, user=self.context["request"].user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
+
+    def save(self, **kwargs):
+        user = self.context["request"].user
+        user.set_password(self.validated_data["new_password"])
+        user.save()
+        return user

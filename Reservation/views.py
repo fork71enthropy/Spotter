@@ -39,9 +39,8 @@ class CarelListAPIView(generics.ListAPIView):
 class CarelAvailabilityAPIView(generics.ListAPIView):
     """
     GET /api/reservation/carels/disponibilite/?date=2026-09-01T10:00:00Z&duration=2
-    -> tous les carels, chacun avec son nombre de places encore libres pour
-    CE créneau précis. C'est cet endpoint que le front utilisera pour
-    n'afficher que les carels réellement disponibles (comme le vrai site de BU).
+    -> tous les carels, chacun avec un booléen "disponible" pour CE créneau
+    précis (chevauchement de plage horaire, pas juste égalité exacte).
     """
     serializer_class = CarelAvailabilitySerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -50,7 +49,7 @@ class CarelAvailabilityAPIView(generics.ListAPIView):
     def get_queryset(self):
         return Carel.objects.all().order_by("etage", "numero")
 
-    def _resolve_creneau(self):
+    def _resolve_window(self):
         date_str = self.request.query_params.get("date")
         duration_str = self.request.query_params.get("duration")
         if not date_str or not duration_str:
@@ -65,14 +64,24 @@ class CarelAvailabilityAPIView(generics.ListAPIView):
         except ValueError:
             raise ValidationError({"duration": "Doit être un entier."})
 
-        # On ne CRÉE jamais de Creneau ici (une requête GET ne doit jamais
-        # avoir d'effet de bord) : si personne n'a encore réservé sur ce
-        # créneau, il n'existe simplement pas encore en base -> tout est libre.
-        return Creneau.objects.filter(date=parsed_date, duration=duration).first()
+        return parsed_date, parsed_date + timedelta(hours=duration)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context["creneau"] = self._resolve_creneau()
+        start, end = self._resolve_window()
+
+        todays_reservations = (
+            Reservation.objects.filter(creneau__date__date=start.date())
+            .select_related("creneau")
+            .values("carel_id", "creneau__date", "creneau__duration")
+        )
+        intervals_by_carel = {}
+        for row in todays_reservations:
+            s = row["creneau__date"]
+            e = s + timedelta(hours=row["creneau__duration"])
+            intervals_by_carel.setdefault(row["carel_id"], []).append((s, e))
+
+        context.update({"start": start, "end": end, "intervals_by_carel": intervals_by_carel})
         return context
 
 
@@ -116,24 +125,27 @@ class CarelDailyAvailabilityAPIView(generics.ListAPIView):
 
         candidate_times = self._candidate_times()
 
-        # Une seule requête pour récupérer tous les Creneau du jour existant
-        # déjà pour cette durée (au lieu d'une requête par créneau candidat).
-        existing = Creneau.objects.filter(date__in=candidate_times, duration=duration)
-        existing_by_date = {c.date: c for c in existing}
-
-        # Une seule requête pour compter toutes les réservations concernées,
-        # groupées par (carel, creneau).
-        counts_qs = (
-            Reservation.objects.filter(creneau__in=existing_by_date.values())
-            .values("carel_id", "creneau_id")
-            .annotate(count=Count("id"))
+        # On récupère TOUTES les réservations du jour (toutes durées
+        # confondues), et on les regroupe par carel sous forme d'intervalles
+        # [début, fin). C'est ce qui permet de détecter un chevauchement
+        # entre une réservation de 10h00/2h et une candidate de 10h30/1h,
+        # même si ce ne sont pas le même (date, duration) exact.
+        today = dj_timezone.localdate()
+        todays_reservations = (
+            Reservation.objects.filter(creneau__date__date=today)
+            .select_related("creneau")
+            .values("carel_id", "creneau__date", "creneau__duration")
         )
-        reservation_counts = {(row["carel_id"], row["creneau_id"]): row["count"] for row in counts_qs}
+        intervals_by_carel = {}
+        for row in todays_reservations:
+            start = row["creneau__date"]
+            end = start + timedelta(hours=row["creneau__duration"])
+            intervals_by_carel.setdefault(row["carel_id"], []).append((start, end))
 
         context.update({
             "candidate_times": candidate_times,
-            "existing_creneaux": existing_by_date,
-            "reservation_counts": reservation_counts,
+            "duration": duration,
+            "intervals_by_carel": intervals_by_carel,
         })
         return context
 

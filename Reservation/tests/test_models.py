@@ -72,9 +72,16 @@ class ReservationModelTests(TestCase):
                     etudiant=self.etudiant, carel=self.carel, creneau=self.creneau
                 )
 
-    def test_two_different_students_can_share_same_slot(self):
-        # nb_places=2 sur ce carel : deux étudiants différents doivent pouvoir
-        # réserver le même carel/créneau sans que la base ne s'y oppose.
+    def test_database_does_not_enforce_exclusivity_by_itself(self):
+        # Attention : ce test ne valide PAS la règle métier "une seule
+        # réservation par créneau" -> cette règle est appliquée dans
+        # ReservationCreateSerializer.create(), pas au niveau de la base.
+        # Ce test démontre juste que la contrainte SQL unique_together
+        # ("etudiant", "carel", "creneau") n'empêche pas, à elle seule, deux
+        # ÉTUDIANTS DIFFÉRENTS de créer chacun une ligne pour le même
+        # carel/créneau si on contourne le serializer (ex: import direct,
+        # admin Django). C'est un test de robustesse du modèle brut, pas une
+        # confirmation que ce cas est autorisé côté API.
         autre_etudiant = make_user(username="autre", email="autre@example.com")
         Reservation.objects.create(etudiant=self.etudiant, carel=self.carel, creneau=self.creneau)
         Reservation.objects.create(etudiant=autre_etudiant, carel=self.carel, creneau=self.creneau)

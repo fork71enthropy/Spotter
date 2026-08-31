@@ -99,3 +99,81 @@ class ReservationCreateSerializerTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         with self.assertRaises(ValidationError):
             serializer.save()
+
+    def test_overlapping_but_non_identical_slot_rejected(self):
+        # Reproduit le bug trouvé manuellement : une réservation de 10h00/2h
+        # (donc 10h00-12h00) existe déjà. Une tentative de réservation à
+        # 10h30/1h (10h30-11h30, chevauche largement) doit être rejetée,
+        # même si (date, duration) est différent du créneau déjà pris.
+        creneau_existant = Creneau.objects.create(
+            date=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc), duration=2
+        )
+        Reservation.objects.create(etudiant=self.etudiant, carel=self.carel, creneau=creneau_existant)
+
+        autre_etudiant = make_user(username="autre", email="autre@example.com")
+        request = factory.post("/api/reservation/reservations/")
+        request.user = autre_etudiant
+
+        payload = self._valid_payload(
+            date=datetime(2026, 9, 1, 10, 30, tzinfo=timezone.utc), duration=1
+        )
+        serializer = ReservationCreateSerializer(data=payload, context={"request": request})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with self.assertRaises(ValidationError):
+            serializer.save()
+
+    def test_back_to_back_slots_are_allowed(self):
+        # Une réservation de 10h00-12h00 ne doit PAS bloquer une réservation
+        # qui commence exactement à 12h00 (bord à bord, pas de chevauchement réel).
+        creneau_existant = Creneau.objects.create(
+            date=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc), duration=2
+        )
+        Reservation.objects.create(etudiant=self.etudiant, carel=self.carel, creneau=creneau_existant)
+
+        autre_etudiant = make_user(username="autre", email="autre@example.com")
+        request = factory.post("/api/reservation/reservations/")
+        request.user = autre_etudiant
+
+        payload = self._valid_payload(
+            date=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc), duration=1
+        )
+        serializer = ReservationCreateSerializer(data=payload, context={"request": request})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        reservation = serializer.save()  # ne doit PAS lever d'exception
+        self.assertEqual(reservation.etudiant, autre_etudiant)
+
+    def test_same_student_cannot_book_two_different_carels_at_overlapping_time(self):
+        # Reproduit le bug trouvé manuellement : un même étudiant réserve
+        # 08h-09h dans le Carel A, puis tente 08h-09h dans le Carel B ->
+        # doit être rejeté (impossible d'être à deux endroits à la fois),
+        # même si les deux carels sont physiquement différents et libres.
+        autre_carel = Carel.objects.create(numero=202, etage=2, nb_places=1)
+        creneau_8h = Creneau.objects.create(date=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc), duration=1)
+        Reservation.objects.create(etudiant=self.etudiant, carel=self.carel, creneau=creneau_8h)
+
+        payload = {
+            "carel": autre_carel.id,
+            "date": datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc),
+            "duration": 1,
+        }
+        serializer = ReservationCreateSerializer(data=payload, context={"request": self.request})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with self.assertRaises(ValidationError):
+            serializer.save()
+
+    def test_same_student_can_book_different_carels_at_non_overlapping_time(self):
+        # Le même étudiant DOIT pouvoir réserver deux carels différents à
+        # des horaires qui ne se chevauchent pas (ex: 8h-9h puis 10h-11h).
+        autre_carel = Carel.objects.create(numero=202, etage=2, nb_places=1)
+        creneau_8h = Creneau.objects.create(date=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc), duration=1)
+        Reservation.objects.create(etudiant=self.etudiant, carel=self.carel, creneau=creneau_8h)
+
+        payload = {
+            "carel": autre_carel.id,
+            "date": datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc),
+            "duration": 1,
+        }
+        serializer = ReservationCreateSerializer(data=payload, context={"request": self.request})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        reservation = serializer.save()  # ne doit PAS lever d'exception
+        self.assertEqual(reservation.carel, autre_carel)

@@ -27,10 +27,12 @@ SECRET_KEY = env("DJANGO_SECRET_KEY", default="django-insecure-build-only-placeh
 # SECURITY WARNING: don't run with debug turned on in production!
 
 
-#DEBUG = env.bool("DJANGO_DEBUG", default=False)
-DEBUG = True
+DEBUG = env.bool("DJANGO_DEBUG", default=False)
+#DEBUG = True
 
-ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", 
+                         default=["localhost", "127.0.0.1"],
+                         )
 
 #ALLOWED_HOSTS = []
 
@@ -55,6 +57,13 @@ INSTALLED_APPS = [
     'books.apps.BooksConfig', 
     'storages', # Cloudflare
     'Reservation', # j'avais oublié d'ajouter l'app
+    # Pour l'api rest
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist', # crée deux tables qui permettent de dire qu'un refresh token a été révoqué, même s'il 
+    # n'est pas encore expiré 
+    'corsheaders',
+    'alerts',
 ]
 
 # django-allauth config
@@ -97,6 +106,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware', # doit être avant CommonMiddleware
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -222,6 +232,11 @@ import socket
 
 hostname, _, ips = socket.gethostbyname_ex(socket.gethostname())
 INTERNAL_IPS = [ip[:-1] + "1" for ip in ips]
+# django-debug-toolbar refuse de se charger pendant `manage.py test` par défaut
+# (Django force DEBUG=False pendant les tests). Ce flag lève ce check bloquant.
+DEBUG_TOOLBAR_CONFIG = {
+    "IS_RUNNING_TESTS": False,
+}
 
 SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=True)
 
@@ -235,7 +250,37 @@ CSRF_COOKIE_SECURE = env.bool("DJANGO_CSRF_COOKIE_SECURE", default=True)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
+# CORS : quelles origines (le frontend React) ont le droit d'appeler cette API depuis un navigateur.
+CORS_ALLOWED_ORIGINS = env.list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    default=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vite dev server
+)
 
+
+# --- Django REST Framework -------------------------------------------------
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+    ),
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
+}
+
+# --- SimpleJWT ---------------------------------------------------------------
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True, # l'ancien refresh token est automatiquement blacklisté à chaque fois qu'un refresh token est utilisé
+    # pour en générer un nouveau 
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
 
 
 
